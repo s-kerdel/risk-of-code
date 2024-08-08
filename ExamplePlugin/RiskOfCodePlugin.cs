@@ -1,11 +1,14 @@
 using BepInEx;
 using R2API;
-using R2API.Utils;
 using RoR2;
+using RoR2.Stats;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using UnityEngine;
-using UnityEngine.AddressableAssets;
+using Mono.Cecil.Cil;
+using MonoMod.Cil;
+using System;
 
 namespace RiskOfCodePlugin
 {
@@ -19,6 +22,9 @@ namespace RiskOfCodePlugin
     // You don't need this if you're not using R2API in your plugin,
     // it's just to tell BepInEx to initialize R2API before this plugin so it's safe to use R2API.
     [BepInDependency(ItemAPI.PluginGUID)]
+
+    // Require R2API ContentManager dependency for loading new skill information.
+    [BepInDependency(R2API.ContentManagement.R2APIContentManager.PluginGUID)]
 
     // This one is because we use a .language file for language tokens
     // More info in https://risk-of-thunder.github.io/R2Wiki/Mod-Creation/Assets/Localization/
@@ -42,14 +48,17 @@ namespace RiskOfCodePlugin
         public const string PluginGUID = PluginAuthor + "." + PluginName;
         public const string PluginAuthor = "Vertex";
         public const string PluginName = "RiskOfCode";
-        public const string PluginVersion = "1.0.0";
+        public const string PluginVersion = "1.0.3";
 
-        // We need our item definition to persist through our functions, and therefore make it a class field.
-        private static ItemDef myItemDef;
+        // Initialise and instatiate randomizer.
+        private System.Random random = new System.Random();
 
-        // Keep track of damage done per player:
-        private Dictionary<string, float> playerDamageTotal = new Dictionary<string, float>();
-        private Dictionary<string, float> playerDamageMax = new Dictionary<string, float>();
+        // Enum for source to differentiate between server and client printing
+        public enum PrintSource
+        {
+            Server,
+            Client
+        }
 
 
         // The Awake() method is run at the very start when the game is initialized.
@@ -58,154 +67,203 @@ namespace RiskOfCodePlugin
             // Init our logging class so that we can properly log for debugging
             Log.Init(Logger);
 
-            // First let's define our item
-            myItemDef = ScriptableObject.CreateInstance<ItemDef>();
-
-            // Language Tokens, explained there https://risk-of-thunder.github.io/R2Wiki/Mod-Creation/Assets/Localization/
-            myItemDef.name = "EXAMPLE_CLOAKONKILL_NAME";
-            myItemDef.nameToken = "EXAMPLE_CLOAKONKILL_NAME";
-            myItemDef.pickupToken = "EXAMPLE_CLOAKONKILL_PICKUP";
-            myItemDef.descriptionToken = "EXAMPLE_CLOAKONKILL_DESC";
-            myItemDef.loreToken = "EXAMPLE_CLOAKONKILL_LORE";
-
-            // The tier determines what rarity the item is:
-            // Tier1=white, Tier2=green, Tier3=red, Lunar=Lunar, Boss=yellow,
-            // and finally NoTier is generally used for helper items, like the tonic affliction
-#pragma warning disable Publicizer001 // Accessing a member that was not originally public. Here we ignore this warning because with how this example is setup we are forced to do this
-            myItemDef._itemTierDef = Addressables.LoadAssetAsync<ItemTierDef>("RoR2/Base/Common/Tier2Def.asset").WaitForCompletion();
-#pragma warning restore Publicizer001
-            // Instead of loading the itemtierdef directly, you can also do this like below as a workaround
-            // myItemDef.deprecatedTier = ItemTier.Tier2;
-
-            // You can create your own icons and prefabs through assetbundles, but to keep this boilerplate brief, we'll be using question marks.
-            myItemDef.pickupIconSprite = Addressables.LoadAssetAsync<Sprite>("RoR2/Base/Common/MiscIcons/texMysteryIcon.png").WaitForCompletion();
-            myItemDef.pickupModelPrefab = Addressables.LoadAssetAsync<GameObject>("RoR2/Base/Mystery/PickupMystery.prefab").WaitForCompletion();
-
-            // Can remove determines
-            // if a shrine of order,
-            // or a printer can take this item,
-            // generally true, except for NoTier items.
-            myItemDef.canRemove = true;
-
-            // Hidden means that there will be no pickup notification,
-            // and it won't appear in the inventory at the top of the screen.
-            // This is useful for certain noTier helper items, such as the DrizzlePlayerHelper.
-            myItemDef.hidden = false;
-
-            // You can add your own display rules here,
-            // where the first argument passed are the default display rules:
-            // the ones used when no specific display rules for a character are found.
-            // For this example, we are omitting them,
-            // as they are quite a pain to set up without tools like https://thunderstore.io/package/KingEnderBrine/ItemDisplayPlacementHelper/
-            var displayRules = new ItemDisplayRuleDict(null);
-
-            // Then finally add it to R2API
-            ItemAPI.Add(new CustomItem(myItemDef, displayRules));
-
-            // But now we have defined an item, but it doesn't do anything yet. So we'll need to define that ourselves.
-            GlobalEventManager.onCharacterDeathGlobal += GlobalEventManager_onCharacterDeathGlobal;
-
-            // Hook into the event when a player deals damage
-            On.RoR2.HealthComponent.TakeDamage += OnTakeDamage;
-
             // Keep track when the stage is ended to print stats at the end of the round.
-            RoR2.SceneExitController.onBeginExit += SceneExitController_onBeginExit;
+            SceneExitController.onBeginExit += SceneExitController_onBeginExit;
+
+            // Hook into the character body initialization
+            // On.RoR2.CharacterBody.Start += CharacterBody_Start;
+            // On.RoR2.MasterSummon.Perform += MasterSummon_Perform;
+
+            Run.onRunStartGlobal += Run_onRunStartGlobal;
+            On.RoR2.Run.AdvanceStage += Run_AdvanceStage;
+
+            PatchEngineerTurretsCapacity();
+        }
+
+        private static void PatchEngineerTurretsCapacity()
+        {
+            // Patch the amount of deployable turrets the engineer can have depending on magazines.
+            IL.RoR2.CharacterMaster.GetDeployableSameSlotLimit += (il) =>
+            {
+                ILCursor c = new ILCursor(il);
+                c.GotoNext([
+                    (Instruction x) => ILPatternMatchingExt.MatchLdcI4(x, 3)
+                ]);
+                c.Remove();
+                c.Emit(OpCodes.Ldarg_0);
+                Func<CharacterMaster, int> func = (CharacterMaster b) => 2 + b.inventory.GetItemCount(DLC1Content.Items.EquipmentMagazineVoid);
+                c.EmitDelegate<Func<CharacterMaster, int>>(func);
+            };
+        }
+
+        private void Run_AdvanceStage(On.RoR2.Run.orig_AdvanceStage orig, Run self, SceneDef nextScene)
+        {
+            try
+            {
+                // Gamble every player's inventory and balance the game while making things harder too.
+                Chat.AddMessage($"<style=cEvent>Something strange is happening to your equipment...</style>");
+                System.Collections.ObjectModel.ReadOnlyCollection<PlayerCharacterMasterController> players = PlayerCharacterMasterController.instances;
+                int totalPlayersItemCount = players.Select(p => p.master).Sum(c => c.inventory.itemStacks.Sum());
+                Log.Info($"Total player item count: {totalPlayersItemCount}.");
+                if (totalPlayersItemCount > 0)
+                {
+                    while (totalPlayersItemCount % players.Count != 0)
+                        totalPlayersItemCount++;
+                    Log.Info($"Modified player balancing count: {totalPlayersItemCount}, will give {totalPlayersItemCount / players.Count} to each.");
+
+                    foreach (CharacterMaster player in players.Select(p => p.master))
+                    {
+                        player.inventory.CleanInventory();
+                        player.inventory.GiveRandomItems(totalPlayersItemCount / players.Count, true, true);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Chat.SimpleChatMessage exceptionMessage = new Chat.SimpleChatMessage
+                {
+                    baseToken = $"<style=cDeath>{e.Message}</style>",
+                };
+                Chat.SendBroadcastChat(exceptionMessage);
+            }
+
+            orig(self, nextScene);
+        }
+
+        private void Run_onRunStartGlobal(Run obj)
+        {
+            Chat.AddMessage($"<style=cEvent>Luck is granted to stay on your side...</style>");
+            foreach (CharacterMaster characterMaster in PlayerCharacterMasterController.instances.Select(p => p.master))
+            {
+                characterMaster.inventory.GiveItem(RoR2Content.Items.Clover);
+            }
+        }
+
+
+        //private CharacterMaster MasterSummon_Perform(On.RoR2.MasterSummon.orig_Perform orig, MasterSummon self)
+        //{
+        //    Chat.AddMessage("Setting MasterSummon ignore limit to true.");
+        //    self.ignoreTeamMemberLimit = true;
+        //    TeamIndex teamIndex = TeamComponent.GetObjectTeam(self.summonerBodyObject);
+        //    TeamDef teamDef = TeamCatalog.GetTeamDef(teamIndex);
+        //    if (teamDef == null)
+        //    {
+        //        return orig(self);
+        //    }
+        //    teamDef.softCharacterLimit = 99;
+        //    Chat.AddMessage($"Current MasterSummon spawn count: {TeamComponent.GetTeamMembers(teamIndex).Count}, soft limit: {teamDef.softCharacterLimit}.");
+        //    return orig(self);
+        //}
+
+        //private void CharacterBody_Start(On.RoR2.CharacterBody.orig_Start orig, CharacterBody self)
+        //{
+        //    // Call the original method first
+        //    orig(self);
+
+        //    // Check if this is the Engineer body
+        //    if (self.bodyIndex == BodyCatalog.FindBodyIndex("EngiBody"))
+        //    {
+        //        SkillLocator skillLocator = self.GetComponent<SkillLocator>();
+        //        if (skillLocator != null)
+        //        {
+        //            GenericSkill specialSkill = skillLocator.special;
+        //            if (specialSkill != null)
+        //            {
+        //                var skillDef = specialSkill.skillDef;
+        //                if (skillDef != null)
+        //                {
+        //                    // Modify the skill parameters directly
+        //                    skillDef.baseMaxStock = 10;
+        //                    skillDef.baseRechargeInterval = 2.5f;
+
+        //                    // Log the changes to ensure they are applied
+        //                    Log.Info("Engineer turret skill modified successfully.");
+        //                }
+        //            }
+        //        }
+        //    }
+        //}
+
+        private void PrintPlayersDamageStats(PrintSource source = PrintSource.Server)
+        {
+            var playerStatsList = new List<(string playerName, ulong totalDamage, ulong maximumHit)>();
+
+            foreach (var playerController in PlayerCharacterMasterController.instances)
+            {
+                CharacterMaster master = playerController.master;
+                if (master != null)
+                {
+                    PlayerStatsComponent statsComponent = master.playerStatsComponent;
+                    if (statsComponent != null)
+                    {
+                        StatSheet statSheet = statsComponent.currentStats;
+                        // Use ternary operator to determine player name or fallback to character name
+                        string characterName = Language.GetString(master.bodyPrefab.GetComponent<CharacterBody>().baseNameToken) ?? "Unknown";
+                        string playerName = playerController.GetDisplayName() ?? characterName;
+
+                        ulong damageMaxHit = statSheet.GetStatValueULong(StatDef.highestDamageDealt);
+                        ulong damageMinions = statSheet.GetStatValueULong(StatDef.totalMinionDamageDealt);
+                        ulong damageDealt = statSheet.GetStatValueULong(StatDef.totalDamageDealt);
+                        ulong damageTotal = damageDealt + damageMinions;
+
+                        playerStatsList.Add((playerName, damageTotal, damageMaxHit));
+                    }
+                }
+            }
+
+            var sortedPlayerStats = playerStatsList.OrderByDescending
+                (stat => stat.totalDamage).ToList();
+
+            StringBuilder statisticsMessage = new StringBuilder();
+            foreach (var playerStats in sortedPlayerStats)
+            {
+                statisticsMessage.AppendLine($"{playerStats.playerName}'s damage: <style=cIsDamage>{playerStats.totalDamage}</style>, max hit: <style=cDeath>{playerStats.maximumHit}</style>");
+            }
+
+            Chat.SimpleChatMessage simpleMessage = new Chat.SimpleChatMessage
+            {
+                baseToken = $"<style=cEvent>{statisticsMessage.ToString().TrimEnd('\r', '\n')}</style>",
+            };
+
+            switch (source)
+            {
+                case PrintSource.Server:
+                    Chat.SendBroadcastChat(simpleMessage);
+                    break;
+                case PrintSource.Client:
+                    Chat.AddMessage(simpleMessage);
+                    break;
+                default:
+                    break;
+            }
         }
 
         private void SceneExitController_onBeginExit(SceneExitController obj)
         {
-            foreach (var player in playerDamageTotal.OrderByDescending(entry => entry.Value))
-            {
-                Chat.AddMessage($"{player.Key}'s highest hit: {playerDamageMax[player.Key]}");
-                Chat.AddMessage($"{player.Key}'s total damage: {player.Value}");
-            }
+            PrintPlayersDamageStats(source: PrintSource.Server);
         }
 
-        private void OnTakeDamage(On.RoR2.HealthComponent.orig_TakeDamage orig, HealthComponent self, DamageInfo damageInfo)
-        {
-            orig(self, damageInfo);
-
-            if (damageInfo.attacker)
-            {
-                var attackerBody = damageInfo.attacker.GetComponent<CharacterBody>();
-                if (attackerBody && attackerBody.isPlayerControlled)
-                {
-                    string playerName = attackerBody.GetUserName();
-                    if (!playerDamageTotal.ContainsKey(playerName))
-                    {
-                        playerDamageTotal[playerName] = 0f;
-                        playerDamageMax[playerName] = 0f;
-                    }
-                    float damageInflicted = damageInfo.damage;
-                    if (damageInflicted > 0f && damageInfo.crit) {
-                        damageInflicted *= 2;
-                    }
-                    playerDamageTotal[playerName] += damageInflicted;
-                    Chat.AddMessage($"{playerName} total damage: {playerDamageTotal[playerName]}, current: {damageInfo.damage}, crit: {damageInfo.crit}, sum: {damageInflicted}");
-
-                    // Keep track of the highest damage output per player:
-                    if (damageInflicted > playerDamageMax[playerName])
-                    {
-                        playerDamageMax[playerName] = damageInflicted;
-                        Chat.AddMessage($"{playerName}'s max hit increased to: {playerDamageMax[playerName]}!");
-                    }
-                }
-            }
-        }
-
-
-        private void GlobalEventManager_onCharacterDeathGlobal(DamageReport report)
-        {
-            // If a character was killed by the world, we shouldn't do anything.
-            if (!report.attacker || !report.attackerBody)
-            {
-                return;
-            }
-
-            var attackerCharacterBody = report.attackerBody;
-
-            // We need an inventory to do check for our item
-            if (attackerCharacterBody.inventory)
-            {
-                // Store the amount of our item we have
-                var garbCount = attackerCharacterBody.inventory.GetItemCount(myItemDef.itemIndex);
-                if (garbCount > 0 &&
-                    // Roll for our 50% chance.
-                    Util.CheckRoll(50, attackerCharacterBody.master))
-                {
-                    // Since we passed all checks, we now give our attacker the cloaked buff.
-                    // Note how we are scaling the buff duration depending on the number of the custom item in our inventory.
-                    attackerCharacterBody.AddTimedBuff(RoR2Content.Buffs.Cloak, 3 + garbCount);
-                }
-            }
-        }
 
         // The Update() method is run on every frame of the game.
         private void Update()
         {
-            // This if statement checks if the player has currently pressed F2.
-            if (Input.GetKeyDown(KeyCode.F2))
+            // Test score output:
+            if (Input.GetKeyDown(KeyCode.F3))
             {
-                // Get the player body to use a position:
-                var transform = PlayerCharacterMasterController.instances[0].master.GetBodyObject().transform;
-
-                // And then drop our defined item in front of the player.
-
-                Log.Info($"Player pressed F2. Spawning our custom item at coordinates {transform.position}");
-                PickupDropletController.CreatePickupDroplet(PickupCatalog.FindPickupIndex(myItemDef.itemIndex), transform.position, transform.forward * 20f);
+                PrintPlayersDamageStats(source: PrintSource.Client);
             }
 
             // This is a bypass to skip the game and test the stage progression event using a hotkey.
-            if (Input.GetKeyDown(KeyCode.F4))
-            {
-                Chat.AddMessage("Force progress to trigger the next stage...");
-                SceneExitController sceneExitController = FindObjectOfType<SceneExitController>();
-                if (sceneExitController != null)
-                {
-                    Chat.AddMessage("SceneExitController instance loaded!");
-                    sceneExitController.SetState(SceneExitController.ExitState.ExtractExp); // = SceneExitController.ExitState.ExtractExp; // TeleportOut
-                }
-            }
+            //if (Input.GetKeyDown(KeyCode.F4))
+            //{
+            //    Chat.AddMessage("Force progress to trigger the next stage...");
+            //    SceneExitController sceneExitController = FindObjectOfType<SceneExitController>();
+            //    if (sceneExitController != null)
+            //    {
+            //        Chat.AddMessage("SceneExitController instance loaded!");
+            //        sceneExitController.SetState(SceneExitController.ExitState.ExtractExp);
+            //    }
+            //}
         }
     }
 }

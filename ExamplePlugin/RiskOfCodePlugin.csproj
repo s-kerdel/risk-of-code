@@ -74,4 +74,8 @@
     </Reference>
   </ItemGroup>
 
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent">
+    <Exec Command="xcopy /Y /R &quot;$(TargetDir)&quot; &quot;C:\Users\darks\AppData\Roaming\r2modmanPlus-local\RiskOfRain2\profiles\Default\BepInEx\plugins\&quot;" />
+  </Target>
+
 </Project>
