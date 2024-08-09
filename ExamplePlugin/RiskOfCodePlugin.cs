@@ -100,23 +100,7 @@ namespace RiskOfCodePlugin
         {
             try
             {
-                // Gamble every player's inventory and balance the game while making things harder too.
-                Chat.AddMessage($"<style=cEvent>Something strange is happening to your equipment...</style>");
-                System.Collections.ObjectModel.ReadOnlyCollection<PlayerCharacterMasterController> players = PlayerCharacterMasterController.instances;
-                int totalPlayersItemCount = players.Select(p => p.master).Sum(c => c.inventory.itemStacks.Sum());
-                Log.Info($"Total player item count: {totalPlayersItemCount}.");
-                if (totalPlayersItemCount > 0)
-                {
-                    while (totalPlayersItemCount % players.Count != 0)
-                        totalPlayersItemCount++;
-                    Log.Info($"Modified player balancing count: {totalPlayersItemCount}, will give {totalPlayersItemCount / players.Count} to each.");
-
-                    foreach (CharacterMaster player in players.Select(p => p.master))
-                    {
-                        player.inventory.CleanInventory();
-                        player.inventory.GiveRandomItems(totalPlayersItemCount / players.Count, true, true);
-                    }
-                }
+                GambleAllPlayerItems();
             }
             catch (Exception e)
             {
@@ -130,12 +114,64 @@ namespace RiskOfCodePlugin
             orig(self, nextScene);
         }
 
+        private static void GambleAllPlayerItems()
+        {
+            // Gamble every player's inventory and balance the game while making things harder too.
+            Chat.AddMessage($"<style=cEvent>Something strange is happening to your equipment...</style>");
+            var players = PlayerCharacterMasterController.instances.Select(x => x.master).ToList();
+
+            int totalPlayersItemCount = players.Select(p => p).Sum(c => c.inventory.itemStacks.Sum());
+
+            Log.Info($"Total player item count: {totalPlayersItemCount}.");
+            if (totalPlayersItemCount > 0)
+            {
+                var totalItemCountPerTier = players
+                    .SelectMany(player => player.GetItemCountPerTier())
+                    .GroupBy(kvp => kvp.Key)
+                    .ToDictionary(group => group.Key, group => group.Sum(kvp => kvp.Value));
+
+                var itemCollectionPerTier = totalItemCountPerTier.Select(x => new
+                {
+                    Tier = x.Key,
+                    RandomItems = Enumerable.Range(0, x.Value)
+                    .Select(y => ItemHelper.GetRandomItem(x.Key))
+                    .ToList()
+                });
+
+                //var allItems = ItemCatalog.allItems.Select(x => new
+                //{
+                //    ItemIndex = x,
+                //    ItemDef = ItemCatalog.GetItemDef(x)
+                //});
+
+                foreach (var tierCollection in itemCollectionPerTier)
+                {
+                    var chunks = tierCollection.RandomItems.SplitIntoChunks(players.Count);
+                    for (int i = 0; i < players.Count; i++)
+                    {
+                        var player = players[i];
+                        var chunk = chunks[i];
+                        player.inventory.CleanInventory();
+
+                        player.inventory.AddItems(chunk);
+                    }
+                }
+            }
+        }
+
         private void Run_onRunStartGlobal(Run obj)
         {
             Chat.AddMessage($"<style=cEvent>Luck is granted to stay on your side...</style>");
+            GiveAllPlayersLuckyClover();
+        }
+
+        private static void GiveAllPlayersLuckyClover()
+        {
             foreach (CharacterMaster characterMaster in PlayerCharacterMasterController.instances.Select(p => p.master))
             {
                 characterMaster.inventory.GiveItem(RoR2Content.Items.Clover);
+
+                characterMaster.inventory.GiveRandomItems(20, false, false);
             }
         }
 
@@ -251,6 +287,10 @@ namespace RiskOfCodePlugin
             if (Input.GetKeyDown(KeyCode.F3))
             {
                 PrintPlayersDamageStats(source: PrintSource.Client);
+            }
+            if (Input.GetKeyDown(KeyCode.F4))
+            {
+                GambleAllPlayerItems();
             }
 
             // This is a bypass to skip the game and test the stage progression event using a hotkey.
