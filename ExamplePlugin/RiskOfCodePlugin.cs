@@ -136,7 +136,7 @@ namespace RiskOfCodePlugin
                     RandomItems = Enumerable.Range(0, x.Value)
                     .Select(y => ItemHelper.GetRandomItem(x.Key))
                     .ToList()
-                });
+                }).ToList();
 
                 //var allItems = ItemCatalog.allItems.Select(x => new
                 //{
@@ -144,16 +144,22 @@ namespace RiskOfCodePlugin
                 //    ItemDef = ItemCatalog.GetItemDef(x)
                 //});
 
+
+                players.ForEach(x => x.inventory.CleanInventory());
+
                 foreach (var tierCollection in itemCollectionPerTier)
                 {
                     var chunks = tierCollection.RandomItems.SplitIntoChunks(players.Count);
+
                     for (int i = 0; i < players.Count; i++)
                     {
                         var player = players[i];
                         var chunk = chunks[i];
-                        player.inventory.CleanInventory();
 
-                        player.inventory.AddItems(chunk);
+                        foreach (var item in chunk)
+                        {
+                            player.inventory.GiveItem(item);
+                        }
                     }
                 }
             }
@@ -162,19 +168,12 @@ namespace RiskOfCodePlugin
         private void Run_onRunStartGlobal(Run obj)
         {
             Chat.AddMessage($"<style=cEvent>Luck is granted to stay on your side...</style>");
-            GiveAllPlayersLuckyClover();
-        }
 
-        private static void GiveAllPlayersLuckyClover()
-        {
             foreach (CharacterMaster characterMaster in PlayerCharacterMasterController.instances.Select(p => p.master))
             {
                 characterMaster.inventory.GiveItem(RoR2Content.Items.Clover);
-
-                characterMaster.inventory.GiveRandomItems(20, false, false);
             }
         }
-
 
         //private CharacterMaster MasterSummon_Perform(On.RoR2.MasterSummon.orig_Perform orig, MasterSummon self)
         //{

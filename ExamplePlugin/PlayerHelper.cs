@@ -20,32 +20,15 @@ namespace RiskOfCodePlugin
 
                 if (retval.TryGetValue(itemDef.tier, out var oldAmount))
                 {
-                    retval[itemDef.tier] = oldAmount + 1;
+                    retval[itemDef.tier] = oldAmount + amount;
                 }
                 else
                 {
-                    retval.Add(itemDef.tier, 1);
+                    retval.Add(itemDef.tier, amount);
                 }
             }
 
             return retval;
-        }
-
-        public static void AddItem(this Inventory inventory, ItemDef item)
-            => AddItems(inventory, [item]);
-
-
-        public static void AddItems(this Inventory inventory, IEnumerable<ItemDef> items)
-        {
-            var newInv = new Inventory();
-            var stacks = newInv.itemStacks;
-
-            foreach (var item in items)
-            {
-                stacks[(int)item.itemIndex] += 1;
-            }
-
-            inventory.AddItemsFrom(stacks, x => true);
         }
 
         private static Dictionary<ItemDef, int> MapItems(CharacterMaster character)
