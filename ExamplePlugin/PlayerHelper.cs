@@ -1,6 +1,7 @@
 ﻿using RoR2;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 
 namespace RiskOfCodePlugin
@@ -17,6 +18,11 @@ namespace RiskOfCodePlugin
             {
                 var itemDef = kvp.Key;
                 var amount = kvp.Value;
+
+                if(itemDef.tier == ItemTier.NoTier)
+                {
+                    continue;
+                }
 
                 if (retval.TryGetValue(itemDef.tier, out var oldAmount))
                 {

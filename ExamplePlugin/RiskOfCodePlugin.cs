@@ -118,7 +118,8 @@ namespace RiskOfCodePlugin
         {
             // Gamble every player's inventory and balance the game while making things harder too.
             Chat.AddMessage($"<style=cEvent>Something strange is happening to your equipment...</style>");
-            var players = PlayerCharacterMasterController.instances.Select(x => x.master).ToList();
+            var players = new List<CharacterMaster>(PlayerCharacterMasterController.instances.Select(x => x.master));
+            players.Shuffle();
 
             int totalPlayersItemCount = players.Select(p => p).Sum(c => c.inventory.itemStacks.Sum());
 
@@ -150,6 +151,7 @@ namespace RiskOfCodePlugin
                 foreach (var tierCollection in itemCollectionPerTier)
                 {
                     var chunks = tierCollection.RandomItems.SplitIntoChunks(players.Count);
+                    chunks.Shuffle();
 
                     for (int i = 0; i < players.Count; i++)
                     {
@@ -287,12 +289,12 @@ namespace RiskOfCodePlugin
             {
                 PrintPlayersDamageStats(source: PrintSource.Client);
             }
-            if (Input.GetKeyDown(KeyCode.F4))
-            {
-                GambleAllPlayerItems();
-            }
+            //if (Input.GetKeyDown(KeyCode.F4))
+            //{
+            //    GambleAllPlayerItems();
+            //}
 
-            // This is a bypass to skip the game and test the stage progression event using a hotkey.
+            // // This is a bypass to skip the game and test the stage progression event using a hotkey.
             //if (Input.GetKeyDown(KeyCode.F4))
             //{
             //    Chat.AddMessage("Force progress to trigger the next stage...");
