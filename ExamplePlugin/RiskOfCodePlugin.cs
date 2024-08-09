@@ -48,7 +48,7 @@ namespace RiskOfCodePlugin
         public const string PluginGUID = PluginAuthor + "." + PluginName;
         public const string PluginAuthor = "Vertex";
         public const string PluginName = "RiskOfCode";
-        public const string PluginVersion = "1.0.3";
+        public const string PluginVersion = "1.0.4";
 
         // Initialise and instatiate randomizer.
         private System.Random random = new System.Random();
