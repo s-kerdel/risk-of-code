@@ -4,14 +4,14 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
-namespace RiskOfCodePlugin
+namespace RiskOfCodePlugin.Helpers
 {
     public static class ItemHelper
     {
         private static Random _rng = new Random();
         private static Dictionary<ItemTier, List<ItemDef>> _allItems;
 
-        public static ItemDef GetRandomItem(RoR2.ItemTier tier)
+        public static ItemDef GetRandomItem(ItemTier tier)
         {
             _allItems ??= ItemCatalog.allItems
                 .Select(ItemCatalog.GetItemDef)

@@ -4,22 +4,22 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
-namespace RiskOfCodePlugin
+namespace RiskOfCodePlugin.Helpers
 {
     public static class PlayerHelper
     {
-        public static Dictionary<RoR2.ItemTier, int> GetItemCountPerTier(this CharacterMaster character)
+        public static Dictionary<ItemTier, int> GetItemCountPerTier(this CharacterMaster character)
         {
             var mapping = MapItems(character);
 
-            var retval = new Dictionary<RoR2.ItemTier, int>();
+            var retval = new Dictionary<ItemTier, int>();
 
             foreach (var kvp in mapping)
             {
                 var itemDef = kvp.Key;
                 var amount = kvp.Value;
 
-                if(itemDef.tier == ItemTier.NoTier)
+                if (itemDef.tier == ItemTier.NoTier)
                 {
                     continue;
                 }

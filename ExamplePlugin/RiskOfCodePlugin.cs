@@ -9,6 +9,7 @@ using UnityEngine;
 using Mono.Cecil.Cil;
 using MonoMod.Cil;
 using System;
+using RiskOfCodePlugin.Plugins;
 
 namespace RiskOfCodePlugin
 {
@@ -49,262 +50,31 @@ namespace RiskOfCodePlugin
         public const string PluginAuthor = "Vertex";
         public const string PluginName = "RiskOfCode";
         public const string PluginVersion = "1.0.4";
+        private List<ICustomPlugin> _plugins = new List<ICustomPlugin>();
 
-        // Initialise and instatiate randomizer.
-        private System.Random random = new System.Random();
-
-        // Enum for source to differentiate between server and client printing
-        public enum PrintSource
+        public RiskOfCodePlugin()
         {
-            Server,
-            Client
+            // Init our logging class so that we can properly log for debugging
+            Log.Init(Logger);
+            _plugins.Add(new ItemGamblePlugin(Logger));
+            _plugins.Add(new StatisticPrinterPlugin(Logger));
+            _plugins.Add(new LuckCloverPlugin(Logger));
+            _plugins.Add(new EngineerTurretLimitPlugin(Logger));
         }
-
 
         // The Awake() method is run at the very start when the game is initialized.
         public void Awake()
         {
-            // Init our logging class so that we can properly log for debugging
-            Log.Init(Logger);
-
-            // Keep track when the stage is ended to print stats at the end of the round.
-            SceneExitController.onBeginExit += SceneExitController_onBeginExit;
-
-            // Hook into the character body initialization
-            // On.RoR2.CharacterBody.Start += CharacterBody_Start;
-            // On.RoR2.MasterSummon.Perform += MasterSummon_Perform;
-
-            Run.onRunStartGlobal += Run_onRunStartGlobal;
-            On.RoR2.Run.AdvanceStage += Run_AdvanceStage;
-
-            PatchEngineerTurretsCapacity();
+            _plugins.ForEach(x => x.Awake());
         }
-
-        private static void PatchEngineerTurretsCapacity()
-        {
-            // Patch the amount of deployable turrets the engineer can have depending on magazines.
-            IL.RoR2.CharacterMaster.GetDeployableSameSlotLimit += (il) =>
-            {
-                ILCursor c = new ILCursor(il);
-                c.GotoNext([
-                    (Instruction x) => ILPatternMatchingExt.MatchLdcI4(x, 3)
-                ]);
-                c.Remove();
-                c.Emit(OpCodes.Ldarg_0);
-                Func<CharacterMaster, int> func = (CharacterMaster b) => 2 + b.inventory.GetItemCount(DLC1Content.Items.EquipmentMagazineVoid);
-                c.EmitDelegate<Func<CharacterMaster, int>>(func);
-            };
-        }
-
-        private void Run_AdvanceStage(On.RoR2.Run.orig_AdvanceStage orig, Run self, SceneDef nextScene)
-        {
-            try
-            {
-                GambleAllPlayerItems();
-            }
-            catch (Exception e)
-            {
-                Chat.SimpleChatMessage exceptionMessage = new Chat.SimpleChatMessage
-                {
-                    baseToken = $"<style=cDeath>{e.Message}</style>",
-                };
-                Chat.SendBroadcastChat(exceptionMessage);
-            }
-
-            orig(self, nextScene);
-        }
-
-        private static void GambleAllPlayerItems()
-        {
-            // Gamble every player's inventory and balance the game while making things harder too.
-            Chat.AddMessage($"<style=cEvent>Something strange is happening to your equipment...</style>");
-            var players = new List<CharacterMaster>(PlayerCharacterMasterController.instances.Select(x => x.master));
-            players.Shuffle();
-
-            int totalPlayersItemCount = players.Select(p => p).Sum(c => c.inventory.itemStacks.Sum());
-
-            Log.Info($"Total player item count: {totalPlayersItemCount}.");
-            if (totalPlayersItemCount > 0)
-            {
-                var totalItemCountPerTier = players
-                    .SelectMany(player => player.GetItemCountPerTier())
-                    .GroupBy(kvp => kvp.Key)
-                    .ToDictionary(group => group.Key, group => group.Sum(kvp => kvp.Value));
-
-                var itemCollectionPerTier = totalItemCountPerTier.Select(x => new
-                {
-                    Tier = x.Key,
-                    RandomItems = Enumerable.Range(0, x.Value)
-                    .Select(y => ItemHelper.GetRandomItem(x.Key))
-                    .ToList()
-                }).ToList();
-
-                //var allItems = ItemCatalog.allItems.Select(x => new
-                //{
-                //    ItemIndex = x,
-                //    ItemDef = ItemCatalog.GetItemDef(x)
-                //});
-
-
-                players.ForEach(x => x.inventory.CleanInventory());
-
-                foreach (var tierCollection in itemCollectionPerTier)
-                {
-                    var chunks = tierCollection.RandomItems.SplitIntoChunks(players.Count);
-                    chunks.Shuffle();
-
-                    for (int i = 0; i < players.Count; i++)
-                    {
-                        var player = players[i];
-                        var chunk = chunks[i];
-
-                        foreach (var item in chunk)
-                        {
-                            player.inventory.GiveItem(item);
-                        }
-                    }
-                }
-            }
-        }
-
-        private void Run_onRunStartGlobal(Run obj)
-        {
-            Chat.AddMessage($"<style=cEvent>Luck is granted to stay on your side...</style>");
-
-            foreach (CharacterMaster characterMaster in PlayerCharacterMasterController.instances.Select(p => p.master))
-            {
-                characterMaster.inventory.GiveItem(RoR2Content.Items.Clover);
-            }
-        }
-
-        //private CharacterMaster MasterSummon_Perform(On.RoR2.MasterSummon.orig_Perform orig, MasterSummon self)
-        //{
-        //    Chat.AddMessage("Setting MasterSummon ignore limit to true.");
-        //    self.ignoreTeamMemberLimit = true;
-        //    TeamIndex teamIndex = TeamComponent.GetObjectTeam(self.summonerBodyObject);
-        //    TeamDef teamDef = TeamCatalog.GetTeamDef(teamIndex);
-        //    if (teamDef == null)
-        //    {
-        //        return orig(self);
-        //    }
-        //    teamDef.softCharacterLimit = 99;
-        //    Chat.AddMessage($"Current MasterSummon spawn count: {TeamComponent.GetTeamMembers(teamIndex).Count}, soft limit: {teamDef.softCharacterLimit}.");
-        //    return orig(self);
-        //}
-
-        //private void CharacterBody_Start(On.RoR2.CharacterBody.orig_Start orig, CharacterBody self)
-        //{
-        //    // Call the original method first
-        //    orig(self);
-
-        //    // Check if this is the Engineer body
-        //    if (self.bodyIndex == BodyCatalog.FindBodyIndex("EngiBody"))
-        //    {
-        //        SkillLocator skillLocator = self.GetComponent<SkillLocator>();
-        //        if (skillLocator != null)
-        //        {
-        //            GenericSkill specialSkill = skillLocator.special;
-        //            if (specialSkill != null)
-        //            {
-        //                var skillDef = specialSkill.skillDef;
-        //                if (skillDef != null)
-        //                {
-        //                    // Modify the skill parameters directly
-        //                    skillDef.baseMaxStock = 10;
-        //                    skillDef.baseRechargeInterval = 2.5f;
-
-        //                    // Log the changes to ensure they are applied
-        //                    Log.Info("Engineer turret skill modified successfully.");
-        //                }
-        //            }
-        //        }
-        //    }
-        //}
-
-        private void PrintPlayersDamageStats(PrintSource source = PrintSource.Server)
-        {
-            var playerStatsList = new List<(string playerName, ulong totalDamage, ulong maximumHit)>();
-
-            foreach (var playerController in PlayerCharacterMasterController.instances)
-            {
-                CharacterMaster master = playerController.master;
-                if (master != null)
-                {
-                    PlayerStatsComponent statsComponent = master.playerStatsComponent;
-                    if (statsComponent != null)
-                    {
-                        StatSheet statSheet = statsComponent.currentStats;
-                        // Use ternary operator to determine player name or fallback to character name
-                        string characterName = Language.GetString(master.bodyPrefab.GetComponent<CharacterBody>().baseNameToken) ?? "Unknown";
-                        string playerName = playerController.GetDisplayName() ?? characterName;
-
-                        ulong damageMaxHit = statSheet.GetStatValueULong(StatDef.highestDamageDealt);
-                        ulong damageMinions = statSheet.GetStatValueULong(StatDef.totalMinionDamageDealt);
-                        ulong damageDealt = statSheet.GetStatValueULong(StatDef.totalDamageDealt);
-                        ulong damageTotal = damageDealt + damageMinions;
-
-                        playerStatsList.Add((playerName, damageTotal, damageMaxHit));
-                    }
-                }
-            }
-
-            var sortedPlayerStats = playerStatsList.OrderByDescending
-                (stat => stat.totalDamage).ToList();
-
-            StringBuilder statisticsMessage = new StringBuilder();
-            foreach (var playerStats in sortedPlayerStats)
-            {
-                statisticsMessage.AppendLine($"{playerStats.playerName}'s damage: <style=cIsDamage>{playerStats.totalDamage}</style>, max hit: <style=cDeath>{playerStats.maximumHit}</style>");
-            }
-
-            Chat.SimpleChatMessage simpleMessage = new Chat.SimpleChatMessage
-            {
-                baseToken = $"<style=cEvent>{statisticsMessage.ToString().TrimEnd('\r', '\n')}</style>",
-            };
-
-            switch (source)
-            {
-                case PrintSource.Server:
-                    Chat.SendBroadcastChat(simpleMessage);
-                    break;
-                case PrintSource.Client:
-                    Chat.AddMessage(simpleMessage);
-                    break;
-                default:
-                    break;
-            }
-        }
-
-        private void SceneExitController_onBeginExit(SceneExitController obj)
-        {
-            PrintPlayersDamageStats(source: PrintSource.Server);
-        }
-
 
         // The Update() method is run on every frame of the game.
         private void Update()
         {
-            // Test score output:
-            if (Input.GetKeyDown(KeyCode.F3))
+            foreach (var plugin in _plugins)
             {
-                PrintPlayersDamageStats(source: PrintSource.Client);
+                plugin.Update();
             }
-            //if (Input.GetKeyDown(KeyCode.F4))
-            //{
-            //    GambleAllPlayerItems();
-            //}
-
-            // // This is a bypass to skip the game and test the stage progression event using a hotkey.
-            //if (Input.GetKeyDown(KeyCode.F4))
-            //{
-            //    Chat.AddMessage("Force progress to trigger the next stage...");
-            //    SceneExitController sceneExitController = FindObjectOfType<SceneExitController>();
-            //    if (sceneExitController != null)
-            //    {
-            //        Chat.AddMessage("SceneExitController instance loaded!");
-            //        sceneExitController.SetState(SceneExitController.ExitState.ExtractExp);
-            //    }
-            //}
         }
     }
 }
